@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"os/exec"
 	"reflect"
 	"strconv"
 	"time"
@@ -63,6 +68,82 @@ func NewClient(chainID, rpcAddr, accountPrefix string, timeout time.Duration) *C
 		AccountPrefix: accountPrefix,
 		Cdc:           MakeCodec(ModuleBasics, accountPrefix, accountPrefix+"valoper"),
 	}
+}
+func isHealthy(address string) bool {
+	fmt.Printf("Checking health of address: %s\n", address)
+
+	parsedURL, err := url.Parse(address)
+	if err != nil {
+		fmt.Printf("Failed to parse URL: %s, error: %v\n", address, err)
+		return false
+	}
+
+	host := parsedURL.Hostname()
+	port := parsedURL.Port()
+	fmt.Printf("Parsed host: %s, port: %s\n", host, port)
+
+	if port == "" {
+		if parsedURL.Scheme == "http" {
+			port = "80"
+		} else if parsedURL.Scheme == "https" {
+			port = "443"
+		}
+		fmt.Printf("Defaulted port to: %s\n", port)
+	}
+
+	// Check if the host is an IP or domain
+	if net.ParseIP(host) != nil {
+		fmt.Printf("Host is an IP address: %s\n", host)
+		// Host is an IP, do a ping check
+		pinger := exec.Command("ping", "-c", "1", host)
+		if err := pinger.Run(); err != nil {
+			fmt.Printf("Ping to IP failed: %s, error: %v\n", host, err)
+			return false
+		}
+	} else {
+		fmt.Printf("Host is a domain: %s\n", host)
+		// Host is a domain, do a DNS lookup
+		if _, err := net.LookupHost(host); err != nil {
+			fmt.Printf("DNS lookup failed for domain: %s, error: %v\n", host, err)
+			return false
+		}
+	}
+
+	// Check the sync status of the node
+	statusURL := fmt.Sprintf("%s://%s:%s/status", parsedURL.Scheme, host, port)
+	fmt.Printf("Checking status URL: %s\n", statusURL)
+	resp, err := http.Get(statusURL)
+	if err != nil {
+		fmt.Printf("HTTP request to %s failed: %v\n", statusURL, err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Result struct {
+			SyncInfo struct {
+				LatestBlockTime string `json:"latest_block_time"`
+			} `json:"sync_info"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		fmt.Printf("Failed to decode JSON response from %s: %v\n", statusURL, err)
+		return false
+	}
+
+	blockTime, err := time.Parse(time.RFC3339, result.Result.SyncInfo.LatestBlockTime)
+	if err != nil {
+		fmt.Printf("Failed to parse latest_block_time: %s, error: %v\n", result.Result.SyncInfo.LatestBlockTime, err)
+		return false
+	}
+
+	if time.Since(blockTime) > 60*time.Second {
+		fmt.Printf("Block time is more than 60 seconds old: %s\n", blockTime)
+		return false
+	}
+
+	fmt.Printf("Address %s is healthy\n", address)
+	return true
 }
 
 // Invoke implements the grpc ClientConn.Invoke method

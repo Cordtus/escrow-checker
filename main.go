@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -15,12 +16,11 @@ import (
 	transfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
 	chantypes "github.com/cosmos/ibc-go/v8/modules/core/04-channel/types"
 	tendermint "github.com/cosmos/ibc-go/v8/modules/light-clients/07-tendermint"
-	"github.com/ghodss/yaml"
 )
 
 const (
-	configPath    = "./config/config.yaml"
-	targetChainID = "osmosis-1"
+	configPath    = "./config/config.json"
+	targetChainID = "neutron-1"
 	maxWorkers    = 1000 // Maximum number of goroutines that will run concurrently while querying escrow information.
 )
 
@@ -29,9 +29,9 @@ var (
 	// Otherwise, add the channel-ids associated with escrow accounts you want to target.
 	targetChannels = []string{}
 
-	retries       = uint(7)
+	retries       = uint(2)
 	retryAttempts = retry.Attempts(retries)
-	retryDelay    = retry.Delay(time.Millisecond * 1000)
+	retryDelay    = retry.Delay(time.Millisecond * 350)
 	retryError    = retry.LastErrorOnly(true)
 )
 
@@ -43,20 +43,32 @@ type Info struct {
 }
 
 func main() {
+	fmt.Println("Reading configuration...")
 	cfg, err := readConfig(configPath)
 	if err != nil {
+		fmt.Printf("Error reading config: %v\n", err)
 		panic(err)
 	}
 
-	clients, err := clientsFromConfig(cfg)
-	if err != nil {
-		panic(err)
+	fmt.Println("Creating clients from config...")
+	clients, unhealthyChains := clientsFromConfig(cfg)
+
+	// Report unhealthy chains
+	reportUnhealthyChains(unhealthyChains)
+
+	// Continue if there are healthy chains
+	if len(clients) == 0 {
+		fmt.Println("No healthy RPC clients available. Exiting.")
+		return
 	}
 
+	fmt.Println("Getting client for target chain...")
 	c, err := clients.clientByChainID(targetChainID)
 	if err != nil {
+		fmt.Printf("Error getting client by chain ID: %v\n", err)
 		panic(err)
 	}
+	fmt.Println("Client setup complete")
 
 	ctx := context.Background()
 
@@ -75,8 +87,6 @@ func main() {
 
 	fmt.Printf("Number of channels: %d \n", len(channels))
 
-	// For every channel query the associated escrow account address, the escrow account balances,
-	// and the channel's associated client state in order to identify the counterparty chain.
 	var (
 		sem   = make(chan struct{}, maxWorkers)
 		wg    = sync.WaitGroup{}
@@ -153,9 +163,6 @@ func main() {
 	wg.Wait()
 	fmt.Println("Finished querying escrow account information.")
 
-	// For each token balance in the escrow accounts, query the IBC denom trace from the hash,
-	// then compose the denom on the counterparty chain and query the tokens total supply.
-	// Assert that the balance in the escrow account is equal to the total supply on the counterparty.
 	fmt.Println("Querying counterparty total supply for each token found in an escrow account...")
 
 	for _, info := range infos {
@@ -176,10 +183,10 @@ func main() {
 				parts := strings.Split(bal.Denom, "/")
 				hash = parts[1]
 			} else {
-				// Found a native denom or non-IBC denom.
 				continue
 			}
 
+			fmt.Printf("Querying denom trace for hash: %s\n", hash)
 			if err := retry.Do(func() error {
 				denom, err = c.QueryDenomTrace(ctx, hash)
 				return err
@@ -189,15 +196,13 @@ func main() {
 				panic(err)
 			}
 
-			path := fmt.Sprintf("%s/%s/%s", info.Channel.Counterparty.PortId, info.Channel.Counterparty.ChannelId, denom.Path)
-			counterpartyDenom := transfertypes.ParseDenomTrace(fmt.Sprintf("%s/%s", path, denom.BaseDenom))
+			fmt.Printf("Denom trace: %s\n", denom.String())
 
-			ibcDenom := counterpartyDenom.IBCDenom()
 			if err := retry.Do(func() error {
-				amount, err = client.QueryBankTotalSupply(ctx, ibcDenom)
+				amount, err = client.QueryBankTotalSupply(ctx, denom.IBCDenom())
 				return err
 			}, retry.Context(ctx), retryAttempts, retryDelay, retryError, retry.OnRetry(func(n uint, err error) {
-				fmt.Printf("Failed to query total supply of %s, retrying (%d/%d): %s \n", ibcDenom, n+1, retries, err.Error())
+				fmt.Printf("Failed to query total supply of %s, retrying (%d/%d): %s \n", denom.IBCDenom(), n+1, retries, err.Error())
 			})); err != nil {
 				panic(err)
 			}
@@ -214,6 +219,8 @@ func main() {
 			}
 		}
 	}
+
+	reportUnhealthyChains(unhealthyChains)
 }
 
 func readConfig(path string) (*Config, error) {
@@ -223,8 +230,7 @@ func readConfig(path string) (*Config, error) {
 	}
 
 	cfg := &Config{}
-
-	err = yaml.Unmarshal(cfgFile, cfg)
+	err = json.Unmarshal(cfgFile, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -232,19 +238,40 @@ func readConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-func clientsFromConfig(cfg *Config) (Clients, error) {
-	clients := make([]*Client, len(cfg.Chains))
+func clientsFromConfig(cfg *Config) (Clients, []string) {
+	var unhealthyChains []string
+	clients := make([]*Client, 0)
 
-	for i, c := range cfg.Chains {
+	for _, c := range cfg.Chains {
 		t, err := time.ParseDuration(c.Timeout)
 		if err != nil {
-			return nil, err
+			fmt.Printf("Error parsing timeout for chain %s: %v\n", c.ChainID, err)
+			continue
 		}
 
-		clients[i] = NewClient(c.ChainID, c.RPCAddress, c.AccountPrefix, t)
+		var rpc string
+		for _, url := range c.RpcAddresses {
+			fmt.Printf("Checking RPC address: %s\n", url)
+			if isHealthy(url) {
+				fmt.Printf("Found healthy RPC address: %s\n", url)
+				rpc = url
+				break
+			} else {
+				fmt.Printf("Unhealthy RPC address: %s\n", url)
+			}
+		}
+		if rpc == "" {
+			fmt.Printf("No healthy RPC URL found for chain %s\n", c.ChainID)
+			unhealthyChains = append(unhealthyChains, c.ChainID)
+			continue
+		}
+
+		client := NewClient(c.ChainID, rpc, c.AccountPrefix, t)
+		clients = append(clients, client)
+		fmt.Printf("Created client for chain %s\n", c.ChainID)
 	}
 
-	return clients, nil
+	return clients, unhealthyChains
 }
 
 func queryChannels(ctx context.Context, c *Client) ([]*chantypes.IdentifiedChannel, error) {
@@ -260,9 +287,11 @@ func queryChannels(ctx context.Context, c *Client) ([]*chantypes.IdentifiedChann
 		}
 	} else {
 		for _, id := range targetChannels {
+			fmt.Printf("Querying channel with ID %s\n", id)
 			channel, err := c.QueryChannel(ctx, id)
 			if err != nil {
-				return nil, err
+				fmt.Printf("Failed to query channel with ID %s: %v\n", id, err)
+				continue
 			}
 
 			channels = append(channels, channel)
@@ -270,4 +299,15 @@ func queryChannels(ctx context.Context, c *Client) ([]*chantypes.IdentifiedChann
 	}
 
 	return channels, nil
+}
+
+func reportUnhealthyChains(unhealthyChains []string) {
+	if len(unhealthyChains) > 0 {
+		fmt.Println("Unhealthy chains report:")
+		for _, chainID := range unhealthyChains {
+			fmt.Printf("Chain ID: %s has no healthy RPC URL\n", chainID)
+		}
+	} else {
+		fmt.Println("All chains had healthy RPC URLs")
+	}
 }

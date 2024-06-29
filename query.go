@@ -14,7 +14,7 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	transfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
 	"github.com/cosmos/ibc-go/v8/modules/core/04-channel/types"
-	chantypes "github.com/cosmos/ibc-go/v8/modules/core/04-channel/types"
+	chantypes "github.com/cosmos/ibc-go/v8/modules/core/04-channel/types" // Only this import should be present
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
