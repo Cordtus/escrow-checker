@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -13,12 +15,14 @@ import (
 	querytypes "github.com/cosmos/cosmos-sdk/types/query"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	transfertypes "github.com/cosmos/ibc-go/v8/modules/apps/transfer/types"
-	chantypes "github.com/cosmos/ibc-go/v8/modules/core/04-channel/types" // Only this import should be present
+	chantypes "github.com/cosmos/ibc-go/v8/modules/core/04-channel/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const paginationDelay = 10 * time.Millisecond
+
+var logger = log.New(os.Stdout, "query: ", log.LstdFlags|log.Lshortfile)
 
 func (c *Client) QueryBalances(ctx context.Context, addr string) (*banktypes.QueryAllBalancesResponse, error) {
 	qc := banktypes.NewQueryClient(c)
@@ -31,9 +35,11 @@ func (c *Client) QueryBalances(ctx context.Context, addr string) (*banktypes.Que
 
 	res, err := qc.AllBalances(ctx, req, nil)
 	if err != nil {
+		logger.Printf("Error querying balances for address %s: %v", addr, err)
 		return nil, err
 	}
 
+	logger.Printf("Successfully queried balances for address %s", addr)
 	return res, nil
 }
 
@@ -47,23 +53,25 @@ func (c *Client) QueryBalance(ctx context.Context, addr, denom string) (sdktypes
 
 	res, err := qc.Balance(ctx, req, nil)
 	if err != nil {
+		logger.Printf("Error querying balance for address %s and denom %s: %v", addr, denom, err)
 		return sdktypes.Coin{}, err
 	}
 
+	logger.Printf("Successfully queried balance for address %s and denom %s", addr, denom)
 	return *res.Balance, nil
 }
 
 func (c *Client) QueryBankTotalSupply(ctx context.Context, denom string) (sdktypes.Coin, error) {
-	var (
-		qc  = banktypes.NewQueryClient(c)
-		req = &banktypes.QuerySupplyOfRequest{Denom: denom}
-	)
+	qc := banktypes.NewQueryClient(c)
+	req := &banktypes.QuerySupplyOfRequest{Denom: denom}
 
 	res, err := qc.SupplyOf(ctx, req, nil)
 	if err != nil {
+		logger.Printf("Error querying total supply for denom %s: %v", denom, err)
 		return sdktypes.Coin{}, err
 	}
 
+	logger.Printf("Successfully queried total supply for denom %s", denom)
 	return res.Amount, nil
 }
 
@@ -77,9 +85,11 @@ func (c *Client) QueryEscrowAddress(ctx context.Context, portID, channelID strin
 
 	res, err := qc.EscrowAddress(ctx, req, nil)
 	if err != nil {
+		logger.Printf("Error querying escrow address for port %s and channel %s: %v", portID, channelID, err)
 		return "", err
 	}
 
+	logger.Printf("Successfully queried escrow address for port %s and channel %s", portID, channelID)
 	return res.EscrowAddress, nil
 }
 
@@ -92,23 +102,25 @@ func (c *Client) QueryTotalEscrowForDenom(ctx context.Context, denom string) (sd
 
 	res, err := qc.TotalEscrowForDenom(ctx, req)
 	if err != nil {
+		logger.Printf("Error querying total escrow for denom %s: %v", denom, err)
 		return sdktypes.Coin{}, err
 	}
 
+	logger.Printf("Successfully queried total escrow for denom %s", denom)
 	return res.Amount, nil
 }
 
 func (c *Client) QueryEscrowAmount(ctx context.Context, denom string) (sdktypes.Coin, error) {
-	var (
-		qc  = transfertypes.NewQueryClient(c)
-		req = &transfertypes.QueryTotalEscrowForDenomRequest{Denom: denom}
-	)
+	qc := transfertypes.NewQueryClient(c)
+	req := &transfertypes.QueryTotalEscrowForDenomRequest{Denom: denom}
 
 	res, err := qc.TotalEscrowForDenom(ctx, req, nil)
 	if err != nil {
+		logger.Printf("Error querying escrow amount for denom %s: %v", denom, err)
 		return sdktypes.Coin{}, err
 	}
 
+	logger.Printf("Successfully queried escrow amount for denom %s", denom)
 	return res.Amount, nil
 }
 
@@ -121,46 +133,41 @@ func (c *Client) QueryDenomHash(ctx context.Context, denomTrace string) (string,
 
 	res, err := qc.DenomHash(ctx, req, nil)
 	if err != nil {
+		logger.Printf("Error querying denom hash for trace %s: %v", denomTrace, err)
 		return "", err
 	}
 
+	logger.Printf("Successfully queried denom hash for trace %s", denomTrace)
 	return res.Hash, nil
 }
 
 func (c *Client) QueryDenomTrace(ctx context.Context, hash string) (*transfertypes.DenomTrace, error) {
-	var (
-		qc  = transfertypes.NewQueryClient(c)
-		req = &transfertypes.QueryDenomTraceRequest{Hash: hash}
-	)
+	qc := transfertypes.NewQueryClient(c)
+	req := &transfertypes.QueryDenomTraceRequest{Hash: hash}
 
 	res, err := qc.DenomTrace(ctx, req, nil)
 	if err != nil {
+		logger.Printf("Error querying denom trace for hash %s: %v", hash, err)
 		return nil, err
 	}
 
+	logger.Printf("Successfully queried denom trace for hash %s", hash)
 	return res.DenomTrace, nil
 }
 
 func (c *Client) QueryDenomTraces(ctx context.Context, offset, limit uint64, height int64) ([]transfertypes.DenomTrace, error) {
-	var (
-		qc        = transfertypes.NewQueryClient(c)
-		p         = defaultPageRequest()
-		transfers []transfertypes.DenomTrace
-	)
+	qc := transfertypes.NewQueryClient(c)
+	p := defaultPageRequest()
+	var transfers []transfertypes.DenomTrace
 
 	for {
-		res, err := qc.DenomTraces(ctx,
-			&transfertypes.QueryDenomTracesRequest{
-				Pagination: p,
-			},
-		)
-
+		res, err := qc.DenomTraces(ctx, &transfertypes.QueryDenomTracesRequest{Pagination: p})
 		if err != nil || res == nil {
+			logger.Printf("Error querying denom traces: %v", err)
 			return nil, err
 		}
 
 		transfers = append(transfers, res.DenomTraces...)
-
 		next := res.GetPagination().GetNextKey()
 		if len(next) == 0 {
 			break
@@ -170,13 +177,11 @@ func (c *Client) QueryDenomTraces(ctx context.Context, offset, limit uint64, hei
 		p.Key = next
 	}
 
+	logger.Printf("Successfully queried denom traces")
 	return transfers, nil
 }
 
-func (c *Client) QueryChannelClientState(
-	portID string,
-	channelID string,
-) (*chantypes.QueryChannelClientStateResponse, error) {
+func (c *Client) QueryChannelClientState(portID, channelID string) (*chantypes.QueryChannelClientStateResponse, error) {
 	qc := chantypes.NewQueryClient(c)
 
 	req := &chantypes.QueryChannelClientStateRequest{
@@ -186,9 +191,11 @@ func (c *Client) QueryChannelClientState(
 
 	res, err := qc.ChannelClientState(context.Background(), req)
 	if err != nil {
+		logger.Printf("Error querying channel client state for port %s and channel %s: %v", portID, channelID, err)
 		return nil, err
 	}
 
+	logger.Printf("Successfully queried channel client state for port %s and channel %s", portID, channelID)
 	return res, nil
 }
 
@@ -203,14 +210,15 @@ func (c *Client) QueryChannel(ctx context.Context, channelID string) (*chantypes
 
 	resp, err := qc.Channel(ctx, req, nil)
 	if err != nil {
+		logger.Printf("Error querying channel for channelID %s: %v", channelID, err)
 		return nil, err
 	}
 
 	ch := chantypes.NewIdentifiedChannel(portID, channelID, *resp.Channel)
+	logger.Printf("Successfully queried channel for channelID %s", channelID)
 	return &ch, nil
 }
 
-// QueryChannels returns all the channels that are registered on a chain.
 func (c *Client) QueryChannels(ctx context.Context) ([]*chantypes.IdentifiedChannel, error) {
 	p := defaultPageRequest()
 	var chans []*chantypes.IdentifiedChannel
@@ -218,6 +226,7 @@ func (c *Client) QueryChannels(ctx context.Context) ([]*chantypes.IdentifiedChan
 	for {
 		res, next, err := c.QueryChannelsPaginated(ctx, p)
 		if err != nil {
+			logger.Printf("Error querying channels: %v", err)
 			return nil, err
 		}
 
@@ -230,32 +239,27 @@ func (c *Client) QueryChannels(ctx context.Context) ([]*chantypes.IdentifiedChan
 		p.Key = next
 	}
 
+	logger.Printf("Successfully queried channels")
 	return chans, nil
 }
 
-// QueryChannelsPaginated returns all the channels for a particular paginated request that are registered on a chain.
-func (c *Client) QueryChannelsPaginated(
-	ctx context.Context,
-	pageRequest *querytypes.PageRequest,
-) ([]*chantypes.IdentifiedChannel, []byte, error) {
+func (c *Client) QueryChannelsPaginated(ctx context.Context, pageRequest *querytypes.PageRequest) ([]*chantypes.IdentifiedChannel, []byte, error) {
 	qc := chantypes.NewQueryClient(c)
 
 	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
 	defer cancel()
 
-	res, err := qc.Channels(ctx, &chantypes.QueryChannelsRequest{
-		Pagination: pageRequest,
-	})
+	res, err := qc.Channels(ctx, &chantypes.QueryChannelsRequest{Pagination: pageRequest})
 	if err != nil {
+		logger.Printf("Error querying channels with pagination: %v", err)
 		return nil, nil, err
 	}
 
 	next := res.GetPagination().GetNextKey()
-
+	logger.Printf("Successfully queried channels with pagination")
 	return res.Channels, next, nil
 }
 
-// QueryABCI performs an ABCI query and returns the appropriate response and error sdk error code.
 func (c *Client) QueryABCI(ctx context.Context, req abci.RequestQuery) (abci.ResponseQuery, error) {
 	opts := client2.ABCIQueryOptions{
 		Height: req.Height,
@@ -264,18 +268,21 @@ func (c *Client) QueryABCI(ctx context.Context, req abci.RequestQuery) (abci.Res
 
 	result, err := c.RPCClient.ABCIQueryWithOptions(ctx, req.Path, req.Data, opts)
 	if err != nil {
+		logger.Printf("Error querying ABCI: %v", err)
 		return abci.ResponseQuery{}, err
 	}
 
 	if !result.Response.IsOK() {
+		logger.Printf("Error response in ABCI query: %v", result.Response)
 		return abci.ResponseQuery{}, sdkErrorToGRPCError(result.Response)
 	}
 
-	// data from trusted node or subspace query doesn't need verification
 	if !opts.Prove || !isQueryStoreWithProof(req.Path) {
+		logger.Printf("Successfully queried ABCI without proof for path %s", req.Path)
 		return result.Response, nil
 	}
 
+	logger.Printf("Successfully queried ABCI with proof for path %s", req.Path)
 	return result.Response, nil
 }
 
@@ -292,8 +299,6 @@ func sdkErrorToGRPCError(resp abci.ResponseQuery) error {
 	}
 }
 
-// isQueryStoreWithProof expects a format like /<queryType>/<storeName>/<subpath>
-// queryType must be "store" and subpath must be "key" to require a proof.
 func isQueryStoreWithProof(path string) bool {
 	if !strings.HasPrefix(path, "/") {
 		return false

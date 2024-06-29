@@ -69,6 +69,7 @@ func NewClient(chainID, rpcAddr, accountPrefix string, timeout time.Duration) *C
 		Cdc:           MakeCodec(ModuleBasics, accountPrefix, accountPrefix+"valoper"),
 	}
 }
+
 func isHealthy(address string) bool {
 	fmt.Printf("Checking health of address: %s\n", address)
 
