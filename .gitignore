@@ -19,3 +19,9 @@
 
 # Go workspace file
 go.work
+
+# Application Binary
+escrow-check
+
+# Notes
+method.txt
